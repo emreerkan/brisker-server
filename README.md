@@ -1,39 +1,40 @@
-Bezique Game Server
+# Brisker Server
 
-Overview
-- Node.js + TypeScript backend for the Bezique Score Keeper PWA.
- - Lightweight Express + WebSocket server (no database required).
+A lightweight Node.js + TypeScript backend for the Brisker PWA, providing real-time multiplayer support via WebSocket.
 
-Setup
-- Copy `.env.example` to `.env` and adjust settings if needed.
-- Start dev server: `npm run dev`.
+## 🚀 Features
 
-Local dev notes
-- To enable secure WebSocket (`wss://`) for the PWA during local development, create local certs (example with mkcert):
-  1. Install mkcert (https://github.com/FiloSottile/mkcert)
- 2. Run `mkcert -install` then `mkcert localhost` to generate `localhost.pem` and `localhost-key.pem` in the repo root.
- 3. The server will pick these up automatically when present and start HTTPS/WSS.
+- **WebSocket Communication**: Real-time player discovery and game synchronization.
+- **Lightweight**: No database required; uses in-memory storage.
+- **Secure Connections**: Supports HTTPS/WSS for secure communication.
 
-Regenerating dependencies (clean lockfile)
-- If you removed DB-related dependencies and want a fresh lockfile locally, delete `package-lock.json` and `node_modules/`, then run:
+## 🌐 Repository
 
-```bash
-cd bezik-server
-npm install
-```
+- GitHub: [Brisker Server](https://github.com/emreerkan/brisker-server/)
+- Git URL: `git@github.com:emreerkan/brisker-server.git`
 
-Data files
-- The server persists assigned 4-digit player IDs to `data/used_player_ids.json` so IDs survive restarts. You can inspect or delete that file to reset the ID pool.
+## 🛠️ Setup
 
-API
-- The server primarily uses WebSocket for player discovery and realtime events.
-- No database-backed REST routes are required in the lightweight server.
+1. **Clone the repository**
+   ```bash
+   git clone git@github.com:emreerkan/brisker-server.git
+   cd brisker-server
+   ```
 
-WebSocket
-- Connect to `ws://HOST:PORT/?playerID=<id>` (or `wss://` for HTTPS) to receive events:
-  - `player:online`, `player:offline`, `game:auto_joined`, `game:joined`, `game:score_updated`, `game:opponent_undo`, `game:completed`.
+2. **Install dependencies**
+   ```bash
+   npm install
+   ```
 
-Notes
-- Geospatial search endpoints can be added with PostGIS or POINT-based distance queries.
- - HTTPS termination is recommended in production; for local development you can create self-signed certs with `mkcert` to enable `wss://`.
+3. **Start the development server**
+   ```bash
+   npm run dev
+   ```
+
+4. **Enable HTTPS (Optional)**
+   - Use `mkcert` to generate local certificates for secure WebSocket connections.
+
+## 📄 License
+
+This project is licensed under the [MIT License](./LICENSE).
 
