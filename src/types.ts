@@ -43,9 +43,9 @@ export type WebSocketEvents =
   | { type: 'player:invalid_id'; payload: { message: string } }
   | { type: 'game:auto_joined'; payload: { opponentID: string; opponentName: string } }
   | { type: 'game:opponent_scored'; payload: { score: number; playerID: string } }
-  | { type: 'game:apply_points'; payload: { points: number; from: string } }
-  | { type: 'game:apply_points'; payload: { points: number; from: string; meta?: Record<string, any> } }
+  | { type: 'game:apply_brisks'; payload: { briskCount: number; from: string } }
   | { type: 'game:opponent_undo'; payload: { points?: number; briskValue?: number; from?: string } }
+  | { type: 'game:reset'; payload: { from: string } }
   | { type: 'player:state_update'; payload: { playerID?: string; name?: string; history?: any[]; total?: number; opponentID?: string; location?: { latitude?: number; longitude?: number } } }
   | { type: 'game:resume'; payload: { opponentID: string; opponentName: string; gameState?: any } }
   | { type: 'players:search'; payload: { searchTerm: string } }

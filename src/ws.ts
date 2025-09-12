@@ -351,16 +351,16 @@ export class WSManager {
         break;
       }
 
-  case 'game:apply_points': {
-        // Sender instructs the opponent to apply a number of points to their own total
+      case 'game:apply_brisks': {
+        // Sender instructs the opponent to apply brisk points to their own total
         const targetOpponentID = (message.payload as any).opponentID as string | undefined;
-        const points = (message.payload as any).points;
-        // Basic validation: do not allow applying points to self
+        const briskCount = (message.payload as any).briskCount;
+        // Basic validation: do not allow applying brisks to self
         if (!targetOpponentID || targetOpponentID === currentPlayerID) break;
         const target = this.clients.get(targetOpponentID);
         if (target && target.ws && target.ws.readyState === target.ws.OPEN) {
           // Forward to the opponent indicating who it's from
-          this.send(targetOpponentID, { type: 'game:apply_points', payload: { points, from: currentPlayerID, meta: (message.payload as any)?.meta } as any });
+          this.send(targetOpponentID, { type: 'game:apply_brisks', payload: { briskCount, from: currentPlayerID } as any });
         }
         break;
       }
