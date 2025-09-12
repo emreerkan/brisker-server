@@ -48,6 +48,8 @@ export type WebSocketEvents =
   | { type: 'game:opponent_undo'; payload: { points?: number; briskValue?: number; from?: string } }
   | { type: 'player:state_update'; payload: { playerID?: string; name?: string; history?: any[]; total?: number; opponentID?: string; location?: { latitude?: number; longitude?: number } } }
   | { type: 'game:resume'; payload: { opponentID: string; opponentName: string; gameState?: any } }
+  | { type: 'players:search'; payload: { searchTerm: string } }
+  | { type: 'players:search_results'; payload: { players: Player[] } }
   | { type: 'game:error'; payload: { message: string } }
   | { type: 'player:online'; payload: { playerID: string } }
   | { type: 'player:offline'; payload: { playerID: string } }

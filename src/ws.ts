@@ -208,11 +208,12 @@ export class WSManager {
 
     switch (typeStr) {
       case 'player:request_id': {
-        // Client requesting a new player ID
+        // Client requesting a new player ID with their chosen name
+        const playerName = (message.payload as any)?.name as string | undefined;
         const newPlayerID = this.generateUniquePlayerID();
-        // Assign real ID and move into clients map (replace any existing connection)
+        // Assign real ID and name to client
         client.playerID = newPlayerID;
-        client.name = `Player ${newPlayerID}`;
+        client.name = playerName || `Player ${newPlayerID}`;
         // If another ws was previously associated with this ID, close it
         const prev = this.clients.get(newPlayerID);
         if (prev && prev.ws !== ws) {
@@ -223,12 +224,12 @@ export class WSManager {
         this.clients.set(newPlayerID, client);
         // Ensure wsToClient maps to the updated client
         this.wsToClient.set(ws, client);
-        console.log(`🎮 New player ID assigned: ${newPlayerID}`);
+        console.log(`🎮 New player ID assigned: ${newPlayerID} (${client.name})`);
         console.log(`👥 Total connected players: ${this.clients.size}`);
         // Send the new ID to client
         ws.send(JSON.stringify({ type: 'player:id_assigned', payload: { playerID: newPlayerID } }));
-  // Notify others that player is online (debounced to avoid duplicates on quick reconnects)
-  this.sendPlayerOnline(newPlayerID);
+        // Notify others that player is online (debounced to avoid duplicates on quick reconnects)
+        this.sendPlayerOnline(newPlayerID);
         break;
       }
 
@@ -397,6 +398,19 @@ export class WSManager {
         this.send(currentPlayerID, { type: 'players:list', payload: { players: safePlayers } } as any);
         break;
       }
+
+      case 'players:search': {
+        const searchTerm = (message.payload as any)?.searchTerm as string | undefined;
+        if (!searchTerm || !searchTerm.trim()) {
+          this.send(currentPlayerID, { type: 'players:search_results', payload: { players: [] } } as any);
+          break;
+        }
+        
+        const searchResults = this.searchPlayers(currentPlayerID, searchTerm.trim());
+        console.log(`🔍 Player ${currentPlayerID} searched for "${searchTerm}". Found ${searchResults.length} results.`);
+        this.send(currentPlayerID, { type: 'players:search_results', payload: { players: searchResults } } as any);
+        break;
+      }
     }
   }
 
@@ -430,6 +444,56 @@ export class WSManager {
         isOnline: client.ws.readyState === client.ws.OPEN,
         location: client.location ? { x: (client.location as any).longitude, y: (client.location as any).latitude } : undefined
       }));
+  }
+
+  /**
+   * Search for players by ID or name. Returns up to 5 matches, excluding the requester.
+   * If search term is exactly 4 digits, prioritize exact ID matches first.
+   */
+  searchPlayers(excludePlayerID: string, searchTerm: string) {
+    const results: any[] = [];
+    const lowerSearchTerm = searchTerm.toLowerCase();
+    const isExact4DigitSearch = /^\d{4}$/.test(searchTerm);
+    
+    // If searching for exact 4-digit ID, check for exact match first
+    if (isExact4DigitSearch) {
+      const exactMatch = this.clients.get(searchTerm);
+      if (exactMatch && searchTerm !== excludePlayerID) {
+        results.push({
+          playerID: searchTerm,
+          name: exactMatch.name || '',
+          isOnline: exactMatch.ws.readyState === exactMatch.ws.OPEN,
+          location: exactMatch.location ? { x: (exactMatch.location as any).longitude, y: (exactMatch.location as any).latitude } : undefined
+        });
+      }
+    }
+    
+    // Then search through all players for partial matches
+    for (const [playerID, client] of this.clients.entries()) {
+      // Exclude the requester from search results
+      if (playerID === excludePlayerID) continue;
+      
+      // Skip if already added as exact match
+      if (isExact4DigitSearch && playerID === searchTerm) continue;
+
+      const playerName = (client.name || '').toLowerCase();
+      const playerIDLower = playerID.toLowerCase();
+
+      // Match by player ID or name
+      if (playerIDLower.includes(lowerSearchTerm) || playerName.includes(lowerSearchTerm)) {
+        results.push({
+          playerID,
+          name: client.name || '',
+          isOnline: client.ws.readyState === client.ws.OPEN,
+          location: client.location ? { x: (client.location as any).longitude, y: (client.location as any).latitude } : undefined
+        });
+
+        // Limit to 5 results total
+        if (results.length >= 5) break;
+      }
+    }
+
+    return results;
   }
 
   private sendPlayerOnline(playerID: string) {
