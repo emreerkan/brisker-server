@@ -12,6 +12,8 @@ export class WSManager {
         // Track last time we broadcast 'player:online' per player to avoid duplicate notifications on quick reconnects
         this.lastOnlineBroadcast = new Map();
         this.ONLINE_BROADCAST_DEBOUNCE_MS = 1500;
+        this.activeGames = new Map();
+        this.ACTIVE_GAME_TTL_MS = 5 * 60 * 1000;
         this.wss = new WebSocketServer({ server });
         this.wss.on('connection', (ws, req) => this.onConnection(ws, req));
         this.dataFilePath = path.join(process.cwd(), 'data', 'used_player_ids.json');
@@ -114,6 +116,201 @@ export class WSManager {
         this.saveUsedIDs().catch(err => console.error('Failed to save used IDs:', err));
         return playerID;
     }
+    isValidPlayerID(id) {
+        return typeof id === 'string' && /^\d{4}$/.test(id);
+    }
+    getGameKey(playerA, playerB) {
+        return [playerA, playerB].sort().join('__');
+    }
+    pruneExpiredGames() {
+        const now = Date.now();
+        for (const [key, game] of this.activeGames.entries()) {
+            if (now - game.lastActivity > this.ACTIVE_GAME_TTL_MS) {
+                this.activeGames.delete(key);
+            }
+        }
+    }
+    ensureActiveGame(playerA, playerB) {
+        if (!this.isValidPlayerID(playerA) || !this.isValidPlayerID(playerB)) {
+            return null;
+        }
+        this.pruneExpiredGames();
+        const key = this.getGameKey(playerA, playerB);
+        const now = Date.now();
+        let game = this.activeGames.get(key);
+        if (!game) {
+            const participants = [playerA, playerB].sort();
+            game = {
+                key,
+                participants,
+                playerData: {},
+                createdAt: now,
+                lastActivity: now,
+            };
+            this.activeGames.set(key, game);
+        }
+        else {
+            game.lastActivity = now;
+            game.participants = [playerA, playerB].sort();
+        }
+        const currentEntry = game.playerData[playerA] || { lastSeen: now };
+        game.playerData[playerA] = {
+            ...currentEntry,
+            name: this.clients.get(playerA)?.name || currentEntry.name,
+            lastSeen: now,
+        };
+        if (!game.playerData[playerB]) {
+            const opponentClient = this.clients.get(playerB);
+            game.playerData[playerB] = {
+                name: opponentClient?.name,
+                lastState: opponentClient?.lastState ?? undefined,
+                lastSeen: now,
+            };
+        }
+        return game;
+    }
+    updateActiveGameName(playerID, name) {
+        if (!this.isValidPlayerID(playerID) || !name)
+            return;
+        const info = this.findActiveGameForPlayer(playerID);
+        if (!info)
+            return;
+        const now = Date.now();
+        const entry = info.game.playerData[playerID] || { lastSeen: now };
+        info.game.playerData[playerID] = { ...entry, name, lastSeen: now };
+        info.game.lastActivity = now;
+    }
+    recordActiveGameSnapshot(playerID, opponentID, client) {
+        if (!this.isValidPlayerID(playerID) || !this.isValidPlayerID(opponentID)) {
+            return;
+        }
+        const game = this.ensureActiveGame(playerID, opponentID);
+        if (!game)
+            return;
+        const now = Date.now();
+        const snapshot = client.lastState ? { ...client.lastState } : undefined;
+        const current = game.playerData[playerID] || { lastSeen: now };
+        game.playerData[playerID] = {
+            ...current,
+            name: client.name || current.name,
+            lastState: snapshot ?? current.lastState,
+            lastSeen: now,
+        };
+        const opponentEntry = game.playerData[opponentID] || { lastSeen: now };
+        const opponentClient = this.clients.get(opponentID);
+        game.playerData[opponentID] = {
+            ...opponentEntry,
+            name: opponentClient?.name || opponentEntry.name,
+            lastState: opponentClient?.lastState ?? opponentEntry.lastState,
+            lastSeen: opponentEntry.lastSeen ?? now,
+        };
+        game.lastActivity = now;
+    }
+    touchActiveGame(playerID, opponentID) {
+        if (!this.isValidPlayerID(playerID) || !this.isValidPlayerID(opponentID)) {
+            return;
+        }
+        const game = this.ensureActiveGame(playerID, opponentID);
+        if (game) {
+            game.lastActivity = Date.now();
+        }
+    }
+    calculateDistance(lat1, lon1, lat2, lon2) {
+        const R = 6371; // km
+        const dLat = ((lat2 - lat1) * Math.PI) / 180;
+        const dLon = ((lon2 - lon1) * Math.PI) / 180;
+        const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos((lat1 * Math.PI) / 180) *
+                Math.cos((lat2 * Math.PI) / 180) *
+                Math.sin(dLon / 2) *
+                Math.sin(dLon / 2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        return R * c;
+    }
+    findActiveGameForPlayer(playerID) {
+        if (!this.isValidPlayerID(playerID))
+            return undefined;
+        this.pruneExpiredGames();
+        for (const [key, game] of this.activeGames.entries()) {
+            if (game.participants.includes(playerID)) {
+                return { key, game };
+            }
+        }
+        return undefined;
+    }
+    restoreActiveGameForPlayer(client) {
+        if (!this.isValidPlayerID(client.playerID))
+            return false;
+        const info = this.findActiveGameForPlayer(client.playerID);
+        if (!info)
+            return false;
+        const { key, game } = info;
+        const now = Date.now();
+        if (now - game.lastActivity > this.ACTIVE_GAME_TTL_MS) {
+            this.activeGames.delete(key);
+            return false;
+        }
+        const opponentID = game.participants.find(id => id !== client.playerID);
+        if (!this.isValidPlayerID(opponentID))
+            return false;
+        client.opponentID = opponentID;
+        const playerEntry = game.playerData[client.playerID] || { lastSeen: now };
+        if (playerEntry.lastState) {
+            client.lastState = { ...playerEntry.lastState };
+        }
+        const opponentEntry = game.playerData[opponentID] || { lastSeen: now };
+        const opponentClient = this.clients.get(opponentID);
+        game.playerData[opponentID] = {
+            ...opponentEntry,
+            name: opponentClient?.name || opponentEntry.name,
+            lastState: opponentClient?.lastState ? { ...opponentClient.lastState } : opponentEntry.lastState,
+            lastSeen: opponentClient ? now : opponentEntry.lastSeen,
+        };
+        const refreshedOpponentEntry = game.playerData[opponentID];
+        game.playerData[client.playerID] = {
+            ...playerEntry,
+            name: client.name || playerEntry.name,
+            lastState: client.lastState ? { ...client.lastState } : playerEntry.lastState,
+            lastSeen: now,
+        };
+        if (opponentClient) {
+            opponentClient.opponentID = client.playerID;
+            if (client.lastState) {
+                this.send(opponentID, {
+                    type: 'game:resume',
+                    payload: {
+                        opponentID: client.playerID,
+                        opponentName: client.name || '',
+                        gameState: { ...client.lastState },
+                    },
+                });
+            }
+            else if (refreshedOpponentEntry?.lastState) {
+                // ensure opponent has latest record for themselves
+                opponentClient.lastState = refreshedOpponentEntry.lastState;
+            }
+        }
+        const opponentName = opponentClient?.name || refreshedOpponentEntry.name || `Player ${opponentID}`;
+        this.send(client.playerID, {
+            type: 'game:auto_joined',
+            payload: {
+                opponentID,
+                opponentName,
+            },
+        });
+        if (refreshedOpponentEntry.lastState) {
+            this.send(client.playerID, {
+                type: 'game:resume',
+                payload: {
+                    opponentID,
+                    opponentName,
+                    gameState: { ...refreshedOpponentEntry.lastState },
+                },
+            });
+        }
+        game.lastActivity = now;
+        return true;
+    }
     onConnection(ws, req) {
         // Initially, we don't know the player ID - client will send it or request a new one
         let tempPlayerID = `temp_${Date.now()}_${Math.random()}`;
@@ -151,6 +348,9 @@ export class WSManager {
                         console.log(`🚪 Player connection closed (debounced): ${pid}`);
                         const timer = setTimeout(() => {
                             console.log(`⏱️ Offline debounce expired, marking player offline: ${pid}`);
+                            if (existing) {
+                                this.recordActiveGameSnapshot(pid, existing.opponentID, existing);
+                            }
                             this.clients.delete(pid);
                             this.offlineTimers.delete(pid);
                             // Clear last online timestamp so a subsequent quick reconnect will be broadcast
@@ -169,6 +369,7 @@ export class WSManager {
                         console.log(`🚪 Player connection closed (debounced): ${playerID}`);
                         const timer = setTimeout(() => {
                             console.log(`⏱️ Offline debounce expired, marking player offline: ${playerID}`);
+                            this.recordActiveGameSnapshot(playerID, c.opponentID, c);
                             this.clients.delete(playerID);
                             this.offlineTimers.delete(playerID);
                             this.lastOnlineBroadcast.delete(playerID);
@@ -248,10 +449,11 @@ export class WSManager {
                     console.log(`👥 Total connected players: ${this.clients.size}`);
                     // Confirm reconnection
                     ws.send(JSON.stringify({ type: 'player:reconnected', payload: { playerID: existingPlayerID } }));
+                    const restoredGame = this.restoreActiveGameForPlayer(client);
                     // Notify others that player is online (debounced to avoid duplicates on quick reconnects)
                     this.sendPlayerOnline(existingPlayerID);
                     // If we have a last-known state for this player, and they have an opponent, inform the opponent so their UI updates
-                    if (client.lastState && client.opponentID) {
+                    if (!restoredGame && client.lastState && client.opponentID) {
                         const opponentIDToNotify = client.opponentID;
                         const gameState = client.lastState;
                         const payload = { opponentID: existingPlayerID, opponentName: client.name || '', gameState };
@@ -269,6 +471,7 @@ export class WSManager {
             }
             case 'player:update_name': {
                 client.name = message.payload?.name || client.name || '';
+                this.updateActiveGameName(client.playerID, client.name);
                 // Notify only the opponent about name change (don't broadcast to everyone)
                 if (client.opponentID) {
                     const opponent = this.clients.get(client.opponentID);
@@ -292,9 +495,24 @@ export class WSManager {
                     client.name = payload.name;
                 if (payload.location)
                     client.location = payload.location;
-                if (payload.opponentID)
+                if (this.isValidPlayerID(payload.opponentID))
                     client.opponentID = payload.opponentID;
-                client.lastState = { total: payload.total, history: payload.history };
+                const previousState = client.lastState || {};
+                const nextState = {};
+                if (typeof payload.total === 'number') {
+                    nextState.total = payload.total;
+                }
+                else if (typeof previousState.total === 'number') {
+                    nextState.total = previousState.total;
+                }
+                if (Array.isArray(payload.history)) {
+                    nextState.history = payload.history;
+                }
+                else if (Array.isArray(previousState.history)) {
+                    nextState.history = previousState.history;
+                }
+                client.lastState = nextState;
+                this.recordActiveGameSnapshot(client.playerID, client.opponentID, client);
                 // Do NOT forward this on every state update — that causes excessive resume messages.
                 // Resume notifications are sent on reconnect (handled elsewhere) so opponents get a single sync.
                 break;
@@ -324,12 +542,59 @@ export class WSManager {
                         type: 'game:auto_joined',
                         payload: { opponentID: currentPlayerID, opponentName: client.name || '' }
                     });
+                    this.ensureActiveGame(currentPlayerID, opponentID);
+                    this.recordActiveGameSnapshot(currentPlayerID, opponentID, client);
+                    this.recordActiveGameSnapshot(opponentID, currentPlayerID, opponent);
                 }
+                break;
+            }
+            case 'players:nearby': {
+                const payload = message.payload || {};
+                const searchLatitude = typeof payload.latitude === 'number' ? payload.latitude : client.location?.latitude;
+                const searchLongitude = typeof payload.longitude === 'number' ? payload.longitude : client.location?.longitude;
+                const radiusKm = typeof payload.radiusKm === 'number' && payload.radiusKm > 0 ? payload.radiusKm : 5;
+                if (typeof searchLatitude !== 'number' || typeof searchLongitude !== 'number') {
+                    this.send(currentPlayerID, {
+                        type: 'game:error',
+                        payload: { message: 'Unable to determine location for nearby search' },
+                    });
+                    break;
+                }
+                // Persist the latest location if provided in the request
+                if (typeof payload.latitude === 'number' && typeof payload.longitude === 'number') {
+                    client.location = { latitude: payload.latitude, longitude: payload.longitude };
+                }
+                const nearbyPlayers = [];
+                for (const [playerID, otherClient] of this.clients.entries()) {
+                    if (playerID === currentPlayerID)
+                        continue;
+                    if (!otherClient.location)
+                        continue;
+                    const distance = this.calculateDistance(searchLatitude, searchLongitude, otherClient.location.latitude, otherClient.location.longitude);
+                    if (distance <= radiusKm) {
+                        nearbyPlayers.push({
+                            playerID,
+                            name: otherClient.name || `Player ${playerID}`,
+                            isOnline: otherClient.ws.readyState === otherClient.ws.OPEN,
+                            distance,
+                        });
+                    }
+                }
+                nearbyPlayers.sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity));
+                const limited = nearbyPlayers.slice(0, 20).map(player => ({
+                    ...player,
+                    distance: typeof player.distance === 'number' ? Number(player.distance.toFixed(2)) : undefined,
+                }));
+                this.send(currentPlayerID, {
+                    type: 'players:nearby_results',
+                    payload: { players: limited },
+                });
                 break;
             }
             case 'game:score_update': {
                 const targetOpponentID = message.payload?.opponentID;
                 if (targetOpponentID) {
+                    this.touchActiveGame(currentPlayerID, targetOpponentID);
                     this.send(targetOpponentID, {
                         type: 'game:opponent_scored',
                         payload: { score: message.payload?.score || 0, playerID: currentPlayerID }
@@ -344,6 +609,7 @@ export class WSManager {
                 // Basic validation: do not allow applying brisks to self
                 if (!targetOpponentID || targetOpponentID === currentPlayerID)
                     break;
+                this.touchActiveGame(currentPlayerID, targetOpponentID);
                 const target = this.clients.get(targetOpponentID);
                 if (target && target.ws && target.ws.readyState === target.ws.OPEN) {
                     // Forward to the opponent indicating who it's from
@@ -356,6 +622,7 @@ export class WSManager {
                 // Basic validation: do not allow undo-for-self
                 if (!targetOpponentID || targetOpponentID === currentPlayerID)
                     break;
+                this.touchActiveGame(currentPlayerID, targetOpponentID);
                 const target = this.clients.get(targetOpponentID);
                 if (target && target.ws && target.ws.readyState === target.ws.OPEN) {
                     this.send(targetOpponentID, {
@@ -369,6 +636,7 @@ export class WSManager {
                 const targetOpponentID = message.payload?.opponentID;
                 if (!targetOpponentID || targetOpponentID === currentPlayerID)
                     break;
+                this.touchActiveGame(currentPlayerID, targetOpponentID);
                 const target = this.clients.get(targetOpponentID);
                 if (target && target.ws && target.ws.readyState === target.ws.OPEN) {
                     this.send(targetOpponentID, { type: 'game:reset', payload: { from: currentPlayerID } });

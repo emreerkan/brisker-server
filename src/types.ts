@@ -5,6 +5,8 @@ export interface Player {
   history?: Array<{ id: string; points: number; timestamp: string; isBrisk?: boolean; briskValue?: number; source?: string; from?: string }>;
   opponentID?: string | null;
   location?: { x: number; y: number } | null;
+  isOnline?: boolean;
+  distance?: number;
 }
 
 export interface ScoreEntry {
@@ -50,6 +52,8 @@ export type WebSocketEvents =
   | { type: 'game:resume'; payload: { opponentID: string; opponentName: string; gameState?: any } }
   | { type: 'players:search'; payload: { searchTerm: string } }
   | { type: 'players:search_results'; payload: { players: Player[] } }
+  | { type: 'players:nearby'; payload: { latitude?: number; longitude?: number; radiusKm?: number } }
+  | { type: 'players:nearby_results'; payload: { players: Array<Player & { distance?: number }> } }
   | { type: 'game:error'; payload: { message: string } }
   | { type: 'player:online'; payload: { playerID: string } }
   | { type: 'player:offline'; payload: { playerID: string } }
@@ -62,4 +66,3 @@ export const BEZIQUE_POINTS = [
 export const BRISK_STEP = 20;
 export const BRISK_MAX = 32;
 export const WIN_THRESHOLD = 10000;
-
