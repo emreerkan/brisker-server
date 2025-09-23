@@ -23,25 +23,8 @@ app.use(rateLimit({ windowMs: config.rateLimitWindowMs, max: config.rateLimitMax
 // Simple health
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
-// No database-backed routes in the lightweight WebSocket-only server
-
 let server = http.createServer(app);
 
-// Create HTTPS server with self-signed certificate for development
-/*let server;
-try {
-  // Try to use HTTPS with self-signed certificates
-  const httpsOptions = {
-    key: fs.readFileSync('localhost-key.pem', 'utf8'),
-    cert: fs.readFileSync('localhost.pem', 'utf8')
-  };
-  server = https.createServer(httpsOptions, app);
-  console.log('🔒 HTTPS server created with SSL certificates');
-} catch (error) {
-  console.log('⚠️  SSL certificates not found, falling back to HTTP server');
-  console.log('💡 To enable HTTPS, run: mkcert localhost');
-  server = http.createServer(app);
-}*/
 
 const ws = new WSManager(server);
 
