@@ -11,7 +11,8 @@ type ClientInfo = {
   location?: { latitude: number; longitude: number } | null;
   opponentID?: string;
   // last known game state published by the client
-  lastState?: { total?: number; history?: any[] } | null;
+  lastState?: { total?: number; history?: any[]; winThreshold?: number } | null;
+  winThreshold?: number;
 };
 
 type LightweightPlayerState = NonNullable<ClientInfo['lastState']>;
@@ -28,6 +29,7 @@ type ActiveGame = {
   playerData: Record<string, StoredPlayerState>;
   createdAt: number;
   lastActivity: number;
+  winThreshold?: number;
 };
 
 export class WSManager {
@@ -44,6 +46,7 @@ export class WSManager {
   private readonly ONLINE_BROADCAST_DEBOUNCE_MS = 1500;
   private activeGames = new Map<string, ActiveGame>();
   private readonly ACTIVE_GAME_TTL_MS = 5 * 60 * 1000;
+  private readonly DEFAULT_WIN_THRESHOLD = 10000;
 
   constructor(server: any) {
     this.wss = new WebSocketServer({ server });
@@ -227,6 +230,11 @@ export class WSManager {
 
     const now = Date.now();
     const snapshot = client.lastState ? { ...client.lastState } : undefined;
+    if (snapshot && typeof snapshot.winThreshold === 'number') {
+      game.winThreshold = snapshot.winThreshold;
+    } else if (typeof client.winThreshold === 'number') {
+      game.winThreshold = client.winThreshold;
+    }
     const current = game.playerData[playerID] || { lastSeen: now };
     game.playerData[playerID] = {
       ...current,
@@ -271,6 +279,70 @@ export class WSManager {
     return R * c;
   }
 
+  private coerceWinThreshold(value: unknown): number {
+    const numeric = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) {
+      return this.DEFAULT_WIN_THRESHOLD;
+    }
+    const rounded = Math.round(numeric);
+    const clamped = Math.max(100, Math.min(100000, rounded));
+    return clamped;
+  }
+
+  private initiateGameBetween(initiator: ClientInfo, opponent: ClientInfo, proposedWinThreshold?: number) {
+    if (!this.isValidPlayerID(initiator.playerID) || !this.isValidPlayerID(opponent.playerID)) {
+      return;
+    }
+
+    const winThreshold = this.coerceWinThreshold(proposedWinThreshold);
+
+    initiator.winThreshold = winThreshold;
+    opponent.winThreshold = winThreshold;
+
+    initiator.lastState = { ...(initiator.lastState ?? {}), winThreshold };
+    opponent.lastState = { ...(opponent.lastState ?? {}), winThreshold };
+
+    initiator.opponentID = opponent.playerID;
+    opponent.opponentID = initiator.playerID;
+
+    const initiatorName = initiator.name || `Player ${initiator.playerID}`;
+    const opponentName = opponent.name || `Player ${opponent.playerID}`;
+
+    this.send(initiator.playerID, {
+      type: 'game:auto_joined',
+      payload: { opponentID: opponent.playerID, opponentName, winThreshold },
+    } as any);
+
+    this.send(opponent.playerID, {
+      type: 'game:auto_joined',
+      payload: { opponentID: initiator.playerID, opponentName: initiatorName, winThreshold },
+    } as any);
+
+    const gameInstance = this.ensureActiveGame(initiator.playerID, opponent.playerID);
+    if (gameInstance) {
+      gameInstance.winThreshold = winThreshold;
+    }
+
+    this.recordActiveGameSnapshot(initiator.playerID, opponent.playerID, initiator);
+    this.recordActiveGameSnapshot(opponent.playerID, initiator.playerID, opponent);
+
+    const opponentState = opponent.lastState ? { ...opponent.lastState } : null;
+    if (opponentState && ((Array.isArray(opponentState.history) && opponentState.history.length > 0) || typeof opponentState.total === 'number')) {
+      this.send(initiator.playerID, {
+        type: 'game:resume',
+        payload: { opponentID: opponent.playerID, opponentName, gameState: opponentState },
+      } as any);
+    }
+
+    const initiatorState = initiator.lastState ? { ...initiator.lastState } : null;
+    if (initiatorState && ((Array.isArray(initiatorState.history) && initiatorState.history.length > 0) || typeof initiatorState.total === 'number')) {
+      this.send(opponent.playerID, {
+        type: 'game:resume',
+        payload: { opponentID: initiator.playerID, opponentName: initiatorName, gameState: initiatorState },
+      } as any);
+    }
+  }
+
   private findActiveGameForPlayer(playerID: string): { key: string; game: ActiveGame } | undefined {
     if (!this.isValidPlayerID(playerID)) return undefined;
     this.pruneExpiredGames();
@@ -304,6 +376,10 @@ export class WSManager {
     if (playerEntry.lastState) {
       client.lastState = { ...playerEntry.lastState };
     }
+    if (playerEntry.lastState && typeof playerEntry.lastState.winThreshold === 'number') {
+      client.winThreshold = playerEntry.lastState.winThreshold;
+      game.winThreshold = playerEntry.lastState.winThreshold;
+    }
 
     const opponentEntry = game.playerData[opponentID] || { lastSeen: now };
     const opponentClient = this.clients.get(opponentID);
@@ -315,6 +391,12 @@ export class WSManager {
       lastSeen: opponentClient ? now : opponentEntry.lastSeen,
     };
     const refreshedOpponentEntry = game.playerData[opponentID];
+    if (refreshedOpponentEntry.lastState && typeof refreshedOpponentEntry.lastState.winThreshold === 'number') {
+      game.winThreshold = refreshedOpponentEntry.lastState.winThreshold;
+      if (opponentClient) {
+        opponentClient.winThreshold = refreshedOpponentEntry.lastState.winThreshold;
+      }
+    }
 
     game.playerData[client.playerID] = {
       ...playerEntry,
@@ -342,11 +424,16 @@ export class WSManager {
 
     const opponentName = opponentClient?.name || refreshedOpponentEntry.name || `Player ${opponentID}`;
 
+    const winThreshold = game.winThreshold ?? client.winThreshold ?? this.DEFAULT_WIN_THRESHOLD;
+    client.winThreshold = winThreshold;
+    client.lastState = { ...(client.lastState ?? {}), winThreshold };
+
     this.send(client.playerID, {
       type: 'game:auto_joined',
       payload: {
         opponentID,
         opponentName,
+        winThreshold,
       },
     } as any);
 
@@ -478,7 +565,7 @@ export class WSManager {
       case 'player:reconnect': {
         // Client reconnecting with existing player ID
         const existingPlayerID = message.payload?.playerID as string | undefined;
-        if (existingPlayerID && /^\d{4}$/.test(existingPlayerID)) {
+        if (this.isValidPlayerID(existingPlayerID)) {
           // If there was a pending offline timer for this player (quick reconnect), cancel it
           const pending = this.offlineTimers.get(existingPlayerID);
           if (pending) {
@@ -549,7 +636,7 @@ export class WSManager {
         if (this.isValidPlayerID(payload.opponentID)) client.opponentID = payload.opponentID;
 
         const previousState = client.lastState || {};
-        const nextState: { total?: number; history?: any[] } = {};
+        const nextState: { total?: number; history?: any[]; winThreshold?: number } = {};
         if (typeof payload.total === 'number') {
           nextState.total = payload.total;
         } else if (typeof previousState.total === 'number') {
@@ -560,6 +647,20 @@ export class WSManager {
           nextState.history = payload.history;
         } else if (Array.isArray(previousState.history)) {
           nextState.history = previousState.history;
+        }
+
+        if (
+          typeof payload.winThreshold === 'number' &&
+          Number.isFinite(payload.winThreshold) &&
+          payload.winThreshold > 0
+        ) {
+          nextState.winThreshold = Math.round(payload.winThreshold);
+          client.winThreshold = nextState.winThreshold;
+        } else if (typeof previousState.winThreshold === 'number') {
+          nextState.winThreshold = previousState.winThreshold;
+          if (typeof client.winThreshold !== 'number') {
+            client.winThreshold = previousState.winThreshold;
+          }
         }
 
         client.lastState = nextState;
@@ -585,22 +686,52 @@ export class WSManager {
         }
         const opponent = this.clients.get(opponentID);
         if (opponent) {
-          // Set up opponent relationship
-          client.opponentID = opponentID;
-          opponent.opponentID = currentPlayerID;
-          // Notify both players
-          this.send(currentPlayerID, {
-            type: 'game:auto_joined',
-            payload: { opponentID, opponentName: opponent.name || '' }
-          });
-          this.send(opponentID, {
-            type: 'game:auto_joined',
-            payload: { opponentID: currentPlayerID, opponentName: client.name || '' }
-          });
-          this.ensureActiveGame(currentPlayerID, opponentID);
-          this.recordActiveGameSnapshot(currentPlayerID, opponentID, client);
-          this.recordActiveGameSnapshot(opponentID, currentPlayerID, opponent);
+          const winThreshold = this.coerceWinThreshold((message.payload as any)?.winThreshold);
+          this.initiateGameBetween(client, opponent, winThreshold);
         }
+        break;
+      }
+
+      case 'game:invite': {
+        const hostID = (message.payload as any)?.hostID as string | undefined;
+        if (!this.isValidPlayerID(hostID) || hostID === currentPlayerID) {
+          this.send(currentPlayerID, {
+            type: 'game:error',
+            payload: { message: 'Invalid invite target' },
+          } as any);
+          break;
+        }
+
+        const hostClient = this.clients.get(hostID);
+        if (!hostClient || hostClient.ws.readyState !== hostClient.ws.OPEN) {
+          this.send(currentPlayerID, {
+            type: 'game:error',
+            payload: { message: 'Player is not available right now' },
+          } as any);
+          break;
+        }
+
+        if (hostClient.opponentID && hostClient.opponentID !== client.playerID) {
+          this.send(currentPlayerID, {
+            type: 'game:error',
+            payload: { message: 'Player is already in a game' },
+          } as any);
+          break;
+        }
+
+        if (client.opponentID && client.opponentID !== hostClient.playerID) {
+          this.send(currentPlayerID, {
+            type: 'game:error',
+            payload: { message: 'You are already in a game' },
+          } as any);
+          break;
+        }
+
+        const hostThreshold = this.coerceWinThreshold(
+          hostClient.winThreshold ?? hostClient.lastState?.winThreshold ?? this.DEFAULT_WIN_THRESHOLD,
+        );
+
+        this.initiateGameBetween(hostClient, client, hostThreshold);
         break;
       }
 

@@ -21,6 +21,7 @@ export interface GameState {
   history: ScoreEntry[];
   lastThreeScores: number[];
   currentOpponent?: Player;
+  winThreshold?: number;
 }
 
 export interface GameSession {
@@ -43,7 +44,8 @@ export type WebSocketEvents =
   | { type: 'player:id_assigned'; payload: { playerID: string } }
   | { type: 'player:reconnected'; payload: { playerID: string } }
   | { type: 'player:invalid_id'; payload: { message: string } }
-  | { type: 'game:auto_joined'; payload: { opponentID: string; opponentName: string } }
+  | { type: 'game:auto_joined'; payload: { opponentID: string; opponentName: string; winThreshold?: number } }
+  | { type: 'game:invite'; payload: { hostID: string } }
   | { type: 'game:opponent_scored'; payload: { score: number; playerID: string } }
   | { type: 'game:apply_brisks'; payload: { briskCount: number; from: string } }
   | { type: 'game:opponent_undo'; payload: { points?: number; briskValue?: number; from?: string } }
@@ -65,4 +67,4 @@ export const BEZIQUE_POINTS = [
 ];
 export const BRISK_STEP = 20;
 export const BRISK_MAX = 32;
-export const WIN_THRESHOLD = 10000;
+export const DEFAULT_WIN_THRESHOLD = 10000;
