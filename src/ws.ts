@@ -735,6 +735,40 @@ export class WSManager {
         break;
       }
 
+      case 'game:disconnect': {
+        const specifiedOpponent = (message.payload as any)?.opponentID as string | undefined;
+        const resolvedOpponentID = this.isValidPlayerID(specifiedOpponent)
+          ? specifiedOpponent!
+          : client.opponentID;
+
+        if (resolvedOpponentID === currentPlayerID) break;
+
+        const opponent = resolvedOpponentID ? this.clients.get(resolvedOpponentID) : undefined;
+
+        if (resolvedOpponentID) {
+          this.activeGames.delete(this.getGameKey(currentPlayerID, resolvedOpponentID));
+        }
+
+        client.opponentID = undefined;
+
+        if (opponent) {
+          opponent.opponentID = undefined;
+          if (opponent.ws.readyState === opponent.ws.OPEN) {
+            this.send(resolvedOpponentID!, {
+              type: 'game:disconnect',
+              payload: { from: currentPlayerID },
+            } as any);
+          }
+        }
+
+        this.send(currentPlayerID, {
+          type: 'game:disconnect',
+          payload: { from: resolvedOpponentID ?? null },
+        } as any);
+
+        break;
+      }
+
       case 'players:nearby': {
         const payload = (message.payload as any) || {};
         const searchLatitude = typeof payload.latitude === 'number' ? payload.latitude : client.location?.latitude;

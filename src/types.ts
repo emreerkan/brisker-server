@@ -45,6 +45,7 @@ export type WebSocketEvents =
   | { type: 'player:reconnected'; payload: { playerID: string } }
   | { type: 'player:invalid_id'; payload: { message: string } }
   | { type: 'game:auto_joined'; payload: { opponentID: string; opponentName: string; winThreshold?: number } }
+  | { type: 'game:disconnect'; payload: { opponentID?: string; from?: string | null } }
   | { type: 'game:invite'; payload: { hostID: string } }
   | { type: 'game:opponent_scored'; payload: { score: number; playerID: string } }
   | { type: 'game:apply_brisks'; payload: { briskCount: number; from: string } }
